@@ -1,0 +1,29 @@
+# --- Python ---
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+venv/
+env/
+.venv/
+
+# --- File hasil & sesi download IDM Clone ---
+*.parts/
+meta.json
+*.tmp
+
+# Kalau nanti cookie disimpan ke file (bukan cuma paste manual di GUI),
+# jangan sampai ikut ke-commit karena berisi session pribadi.
+cookies.txt
+*.cookies
+
+# --- Native messaging host hasil install (path & data lokal, bukan template) ---
+# File template com.idmclone.host.json di dalam repo AMAN untuk di-commit
+# (isinya placeholder). Yang perlu diabaikan cuma hasil generate di luar repo,
+# yang otomatis tidak ikut ter-tracking karena di luar folder ini.
+
+# --- IDE / OS ---
+.vscode/
+.idea/
+*.swp
+.DS_Store

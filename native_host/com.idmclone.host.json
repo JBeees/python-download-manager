@@ -1,0 +1,9 @@
+{
+  "name": "com.idmclone.host",
+  "description": "IDM Clone Native Messaging Host",
+  "path": "__NATIVE_HOST_SCRIPT_PATH__",
+  "type": "stdio",
+  "allowed_origins": [
+    "chrome-extension://__EXTENSION_ID__/"
+  ]
+}
