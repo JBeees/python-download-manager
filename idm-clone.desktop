@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=IDM Clone
+Comment=Python Download Manager
+Exec=bash -c "cd /home/jbe/Documents/Project/Downloader && ./run_idm_clone.sh"
+Icon=applications-internet
+Terminal=false
+Categories=Network;
