@@ -86,39 +86,67 @@ chrome.runtime.onInstalled.addListener(() => {
 
 chrome.contextMenus.onClicked.addListener((info, tab) => {
   if (info.menuItemId === "send-to-idm-clone" && info.linkUrl) {
-    sendUrlToNativeHost(info.linkUrl);
+    // Klik kanan manual tidak punya info save_path pilihan user -> null,
+    // biar gui_main.py fallback ke ~/Downloads.
+    sendUrlToNativeHost(info.linkUrl, null);
   }
 });
 
 // ------------------------------------------------------------------
 // Auto-intercept: setiap kali browser MAU mulai download baru
 // ------------------------------------------------------------------
+// PENTING: chrome.downloads.onCreated terpicu SEBELUM dialog "Save As"
+// selesai dipilih user -- downloadItem.filename masih kosong di titik ini.
+// Jadi kita cuma putuskan shouldIntercept() di sini (berdasarkan ekstensi
+// URL & ukuran, yang sudah tersedia), tapi BELUM cancel. Path final baru
+// didapat lewat onChanged setelah user memilih lokasi.
+const pendingIntercepts = new Map(); // downloadId -> { url }
+
 chrome.downloads.onCreated.addListener((downloadItem) => {
   if (!shouldIntercept(downloadItem)) {
     return; // biarkan browser download seperti biasa
   }
-
   const url = downloadItem.finalUrl || downloadItem.url;
+  pendingIntercepts.set(downloadItem.id, { url });
+});
 
-  chrome.downloads.cancel(downloadItem.id, () => {
+chrome.downloads.onChanged.addListener((delta) => {
+  const pending = pendingIntercepts.get(delta.id);
+  if (!pending) return;
+
+  // Kalau user membatalkan dialog Save As sendiri, downloadnya jadi
+  // "interrupted" -- bersihkan tracking, jangan diteruskan ke IDM Clone.
+  if (delta.state && delta.state.current === "interrupted") {
+    pendingIntercepts.delete(delta.id);
+    return;
+  }
+
+  // filename.current baru terisi PATH ABSOLUT setelah user memilih lokasi
+  // di dialog Save As (atau begitu default location ditentukan kalau
+  // setting "ask where to save" mati).
+  const filename = delta.filename && delta.filename.current;
+  if (!filename) return; // masih menunggu, belum final
+
+  pendingIntercepts.delete(delta.id);
+
+  chrome.downloads.cancel(delta.id, () => {
     if (chrome.runtime.lastError) {
       console.warn("IDM Clone: gagal cancel download bawaan browser ->", chrome.runtime.lastError.message);
     }
-    // Bersihkan entry (file .crdownload kosong) dari daftar & history download browser
-    chrome.downloads.erase({ id: downloadItem.id });
+    chrome.downloads.erase({ id: delta.id });
   });
 
-  console.log(`IDM Clone: intercept download (${url}), dilempar ke IDM Clone.`);
-  sendUrlToNativeHost(url);
+  console.log(`IDM Clone: intercept download (${pending.url}), save_path=${filename}, dilempar ke IDM Clone.`);
+  sendUrlToNativeHost(pending.url, filename);
 });
 
 // ------------------------------------------------------------------
-// Kirim URL ke native host
+// Kirim URL (+ save_path opsional) ke native host
 // ------------------------------------------------------------------
-function sendUrlToNativeHost(url) {
+function sendUrlToNativeHost(url, savePath) {
   chrome.runtime.sendNativeMessage(
     NATIVE_HOST_NAME,
-    { action: "add_download", url: url },
+    { action: "add_download", url: url, save_path: savePath },
     (response) => {
       if (chrome.runtime.lastError) {
         console.error("IDM Clone: gagal konek ke native host ->", chrome.runtime.lastError.message);

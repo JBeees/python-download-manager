@@ -144,6 +144,16 @@ def get_file_info(url, cookies=None):
         raise
 
 
+def strip_query(url):
+    """
+    Buang query string dari URL (termasuk parameter signature seperti
+    X-Amz-Signature, X-Amz-Expires, dst). Dipakai untuk membandingkan
+    apakah dua URL "pada dasarnya" menunjuk ke file yang sama, walau
+    pre-signed URL-nya beda tiap digenerate ulang.
+    """
+    return url.split("?", 1)[0]
+
+
 def _log_request_error(context, url, e):
     status = getattr(e.response, "status_code", None)
     body_preview = ""
@@ -283,7 +293,12 @@ class DownloadTask(QThread):
             if os.path.exists(meta_path):
                 with open(meta_path) as f:
                     meta = json.load(f)
-                if meta.get("url") == self.url and meta.get("total_size") == self.total_size:
+                # Bandingkan base URL (tanpa query/signature) + ukuran file, BUKAN
+                # URL persis sama -- supaya link pre-signed yang diganti (misal
+                # setelah accept ulang agreement / signature baru) tetap dianggap
+                # file yang sama dan bisa lanjut dari progress sebelumnya.
+                if (meta.get("base_url") == strip_query(self.url)
+                        and meta.get("total_size") == self.total_size):
                     resuming = True
                     num_segments = meta["num_segments"]
                     segment_ranges = [tuple(r) for r in meta["segment_ranges"]]
@@ -307,7 +322,7 @@ class DownloadTask(QThread):
                     segment_ranges.append((start, end))
             with open(os.path.join(self.tmp_dir, "meta.json"), "w") as f:
                 json.dump({
-                    "url": self.url, "total_size": self.total_size,
+                    "base_url": strip_query(self.url), "total_size": self.total_size,
                     "num_segments": num_segments, "segment_ranges": segment_ranges,
                 }, f)
 

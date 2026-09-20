@@ -37,7 +37,7 @@ class BrowserListener(QThread):
     'Download with IDM Clone' di browser), lalu emit sinyal ke GUI.
     """
 
-    url_received = pyqtSignal(str)
+    url_received = pyqtSignal(str, object)  # url, save_path (path absolut atau None)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -64,8 +64,9 @@ class BrowserListener(QThread):
                 if data:
                     payload = json.loads(data.decode("utf-8"))
                     url = payload.get("url")
+                    save_path = payload.get("save_path")
                     if url:
-                        self.url_received.emit(url)
+                        self.url_received.emit(url, save_path)
             except Exception as e:
                 print(f"[!] Browser listener error saat baca koneksi: {e}")
             finally:
@@ -118,15 +119,52 @@ class AddDownloadDialog(QDialog):
         )
 
 
+class UpdateLinkDialog(QDialog):
+    """
+    Dialog buat update URL & cookie yang sudah expired pada task yang gagal,
+    supaya retry bisa lanjut dari progress lama (bukan mulai dari nol) --
+    dipakai untuk kasus pre-signed URL (S3/Dataverse) yang cuma valid ~1 jam.
+    """
+
+    def __init__(self, current_url, current_cookie_str, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Update Link (link lama sudah expired)")
+        layout = QFormLayout(self)
+
+        info_label = QLabel(
+            "Ambil URL & Cookie baru dari DevTools (Network tab) setelah\n"
+            "ulangi proses accept/login di browser, lalu tempel di bawah ini."
+        )
+        layout.addRow(info_label)
+
+        self.url_input = QLineEdit(current_url)
+        layout.addRow("URL baru:", self.url_input)
+
+        self.cookie_input = QLineEdit(current_cookie_str)
+        self.cookie_input.setPlaceholderText("Opsional")
+        layout.addRow("Cookie baru:", self.cookie_input)
+
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+        )
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addRow(buttons)
+
+    def get_values(self):
+        return self.url_input.text().strip(), self.cookie_input.text().strip()
+
+
 class DownloadRow:
     """Menyimpan referensi widget & task untuk satu baris di tabel."""
 
-    def __init__(self, task_id, url, output_path, num_segments, row_index, cookies=None):
+    def __init__(self, task_id, url, output_path, num_segments, row_index, cookies=None, cookie_str=""):
         self.task_id = task_id
         self.url = url
         self.output_path = output_path
         self.num_segments = num_segments
         self.cookies = cookies
+        self.cookie_str = cookie_str  # disimpan mentah biar bisa ditampilkan ulang di dialog edit
         self.row_index = row_index
         self.task = None
         self.status = "queued"  # queued -> downloading -> paused/done/error/cancelled
@@ -136,6 +174,7 @@ class DownloadRow:
         self.speed_label = None
         self.downloaded_label = None
         self.pause_btn = None
+        self.edit_link_btn = None
 
 
 class MainWindow(QMainWindow):
@@ -207,20 +246,26 @@ class MainWindow(QMainWindow):
             return
 
         cookies = parse_cookie_string(cookie_str) if cookie_str else None
-        self._add_to_queue(url, save_path, num_segments, cookies=cookies)
+        self._add_to_queue(url, save_path, num_segments, cookies=cookies, cookie_str=cookie_str)
 
-    def on_browser_url(self, url):
+    def on_browser_url(self, url, chosen_path=None):
         """
         Dipanggil (di main thread, aman untuk update GUI) saat ada URL masuk
         dari browser extension lewat BrowserListener.
-        Otomatis simpan ke ~/Downloads tanpa dialog, biar alurnya cepat
-        seperti IDM asli (klik kanan -> langsung masuk antrian).
-        """
-        downloads_dir = os.path.join(os.path.expanduser("~"), "Downloads")
-        os.makedirs(downloads_dir, exist_ok=True)
 
-        suggested_name = filename_from_url(url)
-        save_path = os.path.join(downloads_dir, suggested_name)
+        Kalau user sempat pilih lokasi simpan lewat dialog "Save As" bawaan
+        browser (chosen_path terisi), pakai lokasi itu. Kalau tidak ada
+        (klik kanan manual, atau setting "Ask where to save" browser mati),
+        fallback ke ~/Downloads seperti sebelumnya.
+        """
+        if chosen_path:
+            save_path = chosen_path
+            os.makedirs(os.path.dirname(save_path), exist_ok=True)
+        else:
+            downloads_dir = os.path.join(os.path.expanduser("~"), "Downloads")
+            os.makedirs(downloads_dir, exist_ok=True)
+            suggested_name = filename_from_url(url)
+            save_path = os.path.join(downloads_dir, suggested_name)
 
         # Kalau nama file udah ada, tambahin angka biar gak ketimpa
         base, ext = os.path.splitext(save_path)
@@ -233,12 +278,15 @@ class MainWindow(QMainWindow):
         self.raise_()
         self.activateWindow()
 
-    def _add_to_queue(self, url, save_path, num_segments, cookies=None):
+    def _add_to_queue(self, url, save_path, num_segments, cookies=None, cookie_str=""):
         task_id = str(uuid.uuid4())
         row_index = self.table.rowCount()
         self.table.insertRow(row_index)
 
-        row = DownloadRow(task_id, url, save_path, num_segments, row_index, cookies=cookies)
+        row = DownloadRow(
+            task_id, url, save_path, num_segments, row_index,
+            cookies=cookies, cookie_str=cookie_str,
+        )
 
         self.table.setItem(row_index, 0, QTableWidgetItem(os.path.basename(save_path)))
 
@@ -267,12 +315,17 @@ class MainWindow(QMainWindow):
         pause_btn = QPushButton("Pause")
         pause_btn.setEnabled(False)  # belum aktif selagi masih antri
         cancel_btn = QPushButton("Cancel")
+        edit_link_btn = QPushButton("Edit Link")
+        edit_link_btn.setVisible(False)  # cuma muncul kalau status jadi "error"
         pause_btn.clicked.connect(lambda: self.toggle_pause(task_id))
         cancel_btn.clicked.connect(lambda: self.cancel_download(task_id))
+        edit_link_btn.clicked.connect(lambda: self.edit_link_and_retry(task_id))
         action_layout.addWidget(pause_btn)
         action_layout.addWidget(cancel_btn)
+        action_layout.addWidget(edit_link_btn)
         self.table.setCellWidget(row_index, 6, action_widget)
         row.pause_btn = pause_btn
+        row.edit_link_btn = edit_link_btn
 
         self.rows[task_id] = row
         self.pending_queue.append(task_id)
@@ -318,7 +371,9 @@ class MainWindow(QMainWindow):
 
     def retry_download(self, task_id):
         """Coba download ulang task yang gagal. File .parts lama (kalau ada)
-        akan otomatis dipakai lagi buat resume oleh DownloadTask."""
+        akan otomatis dipakai lagi buat resume oleh DownloadTask (dicocokkan
+        lewat base URL + ukuran file, bukan URL persis sama -- jadi tetap
+        bisa resume walau pre-signed URL-nya sudah diganti lewat Edit Link)."""
         row = self.rows.get(task_id)
         if not row:
             return
@@ -327,11 +382,35 @@ class MainWindow(QMainWindow):
         row.status_label.setText("Menunggu antrian...")
         row.pause_btn.setText("Pause")
         row.pause_btn.setEnabled(False)
+        row.edit_link_btn.setVisible(False)
         row.speed_label.setText("-")
 
         if task_id not in self.pending_queue:
             self.pending_queue.append(task_id)
         self.try_start_pending()
+
+    def edit_link_and_retry(self, task_id):
+        """Update URL & cookie yang sudah expired pada task yang gagal, lalu
+        retry -- tetap pakai output_path/tmp_dir yang sama supaya progress
+        lama (segment yang sudah terdownload) tidak hilang."""
+        row = self.rows.get(task_id)
+        if not row:
+            return
+
+        dialog = UpdateLinkDialog(row.url, row.cookie_str, self)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+
+        new_url, new_cookie_str = dialog.get_values()
+        if not new_url:
+            QMessageBox.warning(self, "Error", "URL tidak boleh kosong.")
+            return
+
+        row.url = new_url
+        row.cookie_str = new_cookie_str
+        row.cookies = parse_cookie_string(new_cookie_str) if new_cookie_str else None
+
+        self.retry_download(task_id)
 
     def cancel_download(self, task_id):
         row = self.rows.get(task_id)
@@ -395,6 +474,7 @@ class MainWindow(QMainWindow):
         if status == "downloading":
             row.pause_btn.setText("Pause")
             row.pause_btn.setEnabled(True)
+            row.edit_link_btn.setVisible(False)
         elif status == "paused":
             row.pause_btn.setText("Resume")
             row.pause_btn.setEnabled(True)
@@ -402,8 +482,13 @@ class MainWindow(QMainWindow):
             if status == "error":
                 row.pause_btn.setText("Retry")
                 row.pause_btn.setEnabled(True)
+                # Tombol ini yang dipakai kalau linknya expired (mis. pre-signed
+                # URL S3/Dataverse) -- user ambil link+cookie baru lalu retry
+                # tanpa kehilangan progress segment yang sudah terdownload.
+                row.edit_link_btn.setVisible(True)
             else:
                 row.pause_btn.setEnabled(False)
+                row.edit_link_btn.setVisible(False)
             if status == "done":
                 row.progress_bar.setValue(100)
             # Task benar-benar berhenti (berhasil/gagal/dibatalkan) -> bebaskan slot buat antrian berikutnya

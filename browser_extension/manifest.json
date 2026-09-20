@@ -1,14 +1,16 @@
 {
   "manifest_version": 3,
   "name": "IDM Clone Integration",
-  "version": "1.0",
-  "description": "Kirim link download ke IDM Clone (download manager lokal kamu).",
+  "version": "1.1",
+  "description": "Kirim link download ke IDM Clone (download manager lokal kamu), termasuk auto-intercept download besar.",
   "permissions": [
     "contextMenus",
     "nativeMessaging",
     "downloads"
   ],
-  "host_permissions": ["<all_urls>"],
+  "host_permissions": [
+    "<all_urls>"
+  ],
   "background": {
     "service_worker": "background.js"
   }

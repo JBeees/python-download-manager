@@ -38,11 +38,11 @@ def send_message(message_dict):
     sys.stdout.buffer.flush()
 
 
-def forward_to_app(url):
-    """Kirim URL ke gui_main.py yang lagi jalan, lewat socket TCP localhost."""
+def forward_to_app(url, save_path=None):
+    """Kirim URL (+ save_path opsional) ke gui_main.py yang lagi jalan, lewat socket TCP localhost."""
     try:
         with socket.create_connection((APP_HOST, APP_PORT), timeout=3) as sock:
-            payload = json.dumps({"url": url}).encode("utf-8")
+            payload = json.dumps({"url": url, "save_path": save_path}).encode("utf-8")
             sock.sendall(payload)
         return {"status": "ok", "message": f"URL dikirim ke IDM Clone: {url}"}
     except (ConnectionRefusedError, socket.timeout, OSError) as e:
@@ -57,7 +57,7 @@ def main():
         return
 
     if msg.get("action") == "add_download" and msg.get("url"):
-        result = forward_to_app(msg["url"])
+        result = forward_to_app(msg["url"], msg.get("save_path"))
         send_message(result)
     else:
         send_message({"status": "error", "message": "Pesan tidak dikenali."})
